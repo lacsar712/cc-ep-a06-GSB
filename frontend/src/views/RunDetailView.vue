@@ -39,6 +39,42 @@
       <p v-if="run.abort_reason"><strong>中止原因：</strong>{{ run.abort_reason }}</p>
     </div>
 
+    <div class="card" style="margin-bottom: 16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div>
+          <h3 style="margin: 0 0 6px">标签</h3>
+          <div class="muted" style="font-size: 12px">
+            落库方式：走命令写入 <span class="mono">event_store</span>（RunTagsAdded /
+            RunTagsRemoved），并投影到详情；可在
+            <a @click="$router.push(`/runs/${run.id}/events`)">事件时间线</a> 回看每次变更。
+          </div>
+        </div>
+        <n-tag v-if="!canTag" size="small">审计员只读</n-tag>
+      </div>
+      <div style="margin-top: 10px">
+        <template v-for="t in run.tags_json || []" :key="t">
+          <n-tag
+            type="info"
+            size="small"
+            :closable="canTag"
+            @close="doRemoveTag(t)"
+            style="margin: 0 8px 8px 0"
+          >
+            {{ t }}
+          </n-tag>
+        </template>
+        <span v-if="!(run.tags_json || []).length" class="muted">暂无标签</span>
+      </div>
+      <div v-if="canTag" style="display:flex;gap:8px;margin-top:8px;max-width:520px">
+        <n-input
+          v-model:value="tagDraft"
+          placeholder="输入标签后回车，可逗号分隔多个（如 night-run）"
+          @keyup.enter="doAddTags"
+        />
+        <n-button type="primary" :loading="tagBusy" @click="doAddTags">打标签</n-button>
+      </div>
+    </div>
+
     <div class="grid-2" style="margin-bottom: 16px">
       <div class="card">
         <h3 style="margin-top: 0">指标（投影）</h3>
@@ -102,10 +138,12 @@ import { useRoute } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
   abortRun,
+  addRunTags,
   attachArtifact,
   completeRun,
   getRun,
   recordMetric,
+  removeRunTags,
 } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -114,6 +152,8 @@ const auth = useAuthStore()
 const message = useMessage()
 const run = ref(null)
 const busy = ref(false)
+const tagBusy = ref(false)
+const tagDraft = ref('')
 const completeSummary = ref('')
 const abortReason = ref('')
 
@@ -126,6 +166,7 @@ const artifact = reactive({
 })
 
 const canWrite = computed(() => auth.role === 'researcher' && run.value?.status === 'running')
+const canTag = computed(() => auth.role === 'researcher')
 const statusLabel = computed(() => {
   const m = { running: '进行中', completed: '已完成', aborted: '已中止' }
   return m[run.value?.status] || run.value?.status
@@ -157,6 +198,47 @@ function randomHex(n) {
 
 async function load() {
   run.value = await getRun(route.params.id)
+}
+
+async function doAddTags() {
+  const tags = tagDraft.value
+    .split(/[,，]/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+  if (!tags.length) {
+    message.warning('请输入至少一个标签')
+    return
+  }
+  tagBusy.value = true
+  try {
+    run.value = await addRunTags(run.value.id, {
+      tags,
+      expected_version: run.value.version,
+    })
+    tagDraft.value = ''
+    message.success('标签已添加（RunTagsAdded 事件已写入）')
+  } catch (e) {
+    message.error(e.message || '打标签失败')
+    await load()
+  } finally {
+    tagBusy.value = false
+  }
+}
+
+async function doRemoveTag(tag) {
+  tagBusy.value = true
+  try {
+    run.value = await removeRunTags(run.value.id, {
+      tags: [tag],
+      expected_version: run.value.version,
+    })
+    message.success('标签已移除（RunTagsRemoved 事件已写入）')
+  } catch (e) {
+    message.error(e.message || '移除失败')
+    await load()
+  } finally {
+    tagBusy.value = false
+  }
 }
 
 async function withBusy(fn) {

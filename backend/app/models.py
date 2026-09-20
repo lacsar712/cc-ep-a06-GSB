@@ -41,5 +41,6 @@ class RunProjection(Base):
     started_by: Mapped[str] = mapped_column(String(64), nullable=False)
     metrics_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     artifacts_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    tags_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     abort_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

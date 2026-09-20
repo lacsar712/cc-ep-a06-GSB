@@ -9,10 +9,12 @@ from app.cqrs import (
     ConflictError,
     DomainError,
     abort_run,
+    add_tags,
     attach_artifact,
     complete_run,
     list_events,
     record_metric,
+    remove_tags,
     start_run,
 )
 from app.database import get_db
@@ -27,6 +29,7 @@ from app.schemas import (
     RecordMetricCommand,
     RunOut,
     StartRunCommand,
+    TagsCommand,
     TokenResponse,
 )
 
@@ -59,6 +62,7 @@ def login(body: LoginRequest):
 def get_runs(
     project: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    tag: str | None = Query(default=None),
     db: Session = Depends(get_db),
     _user: dict = Depends(get_current_user),
 ):
@@ -67,6 +71,18 @@ def get_runs(
         stmt = stmt.where(RunProjection.project == project)
     if status:
         stmt = stmt.where(RunProjection.status == status)
+    if tag:
+        tag_value = tag.strip()
+        if db.bind.dialect.name == "postgresql":
+            # Server-side tag filter via JSONB containment (@>).
+            stmt = stmt.where(RunProjection.tags_json.contains([tag_value]))
+        else:
+            # SQLite (local tests) has no JSONB containment: run the rest of
+            # the query server-side and emulate containment here.
+            rows = [
+                r for r in db.scalars(stmt).all() if tag_value in (r.tags_json or [])
+            ]
+            return rows
     return list(db.scalars(stmt).all())
 
 
@@ -182,6 +198,61 @@ def post_abort(
         )
     except DomainError as exc:
         _handle_domain(exc)
+
+
+@router.post("/runs/{run_id}/tags", response_model=RunOut)
+def post_tags(
+    run_id: UUID,
+    body: TagsCommand,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_researcher),
+):
+    try:
+        return add_tags(
+            db,
+            run_id=run_id,
+            actor=user["username"],
+            tags=body.tags,
+            expected_version=body.expected_version,
+        )
+    except DomainError as exc:
+        _handle_domain(exc)
+
+
+@router.delete("/runs/{run_id}/tags", response_model=RunOut)
+def delete_tags(
+    run_id: UUID,
+    body: TagsCommand,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_researcher),
+):
+    try:
+        return remove_tags(
+            db,
+            run_id=run_id,
+            actor=user["username"],
+            tags=body.tags,
+            expected_version=body.expected_version,
+        )
+    except DomainError as exc:
+        _handle_domain(exc)
+
+
+@router.get("/tags")
+def get_all_tags(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    """Distinct tags across all runs for the tag entry panel."""
+    rows = db.scalars(select(RunProjection.tags_json)).all()
+    counts: dict[str, int] = {}
+    for tags in rows:
+        for tag in tags or []:
+            counts[tag] = counts.get(tag, 0) + 1
+    return [
+        {"tag": tag, "count": count}
+        for tag, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 @router.get("/runs/{run_id}/events", response_model=list[EventOut])

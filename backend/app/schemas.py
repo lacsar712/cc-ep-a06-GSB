@@ -39,6 +39,11 @@ class AbortRunCommand(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class TagsCommand(BaseModel):
+    tags: list[str] = Field(min_length=1, max_length=20)
+    expected_version: int = Field(ge=1)
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -65,6 +70,7 @@ class RunOut(BaseModel):
     started_by: str
     metrics_json: list[Any]
     artifacts_json: list[Any]
+    tags_json: list[str] = []
     result_summary: str | None
     abort_reason: str | None
 

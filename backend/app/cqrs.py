@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -13,6 +14,10 @@ from app.models import EventStore, RunProjection
 
 TERMINAL_STATUSES = {"completed", "aborted"}
 
+# Tags are metadata on a run: 1..64 chars. \w is Unicode-aware for str
+# patterns, so CJK letters are allowed alongside letters/digits/underscore.
+_TAG_RE = re.compile(r"^\w[\w.\-]{0,63}$", re.UNICODE)
+
 
 class DomainError(Exception):
     def __init__(self, message: str, status_code: int = 400):
@@ -24,6 +29,26 @@ class DomainError(Exception):
 class ConflictError(DomainError):
     def __init__(self, message: str = "版本冲突或终态不可变更"):
         super().__init__(message, status_code=409)
+
+
+def normalize_tags(tags: list[str]) -> list[str]:
+    """Strip/validate tags and de-duplicate, preserving first-seen order."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        tag = (raw or "").strip()
+        if not tag:
+            raise DomainError("标签不能为空")
+        if len(tag) > 64:
+            raise DomainError(f"标签过长（最多 64 字符）: {tag}")
+        if not _TAG_RE.match(tag):
+            raise DomainError(f"标签只允许字母/数字/中文/下划线/中划线: {tag}")
+        if tag not in seen:
+            seen.add(tag)
+            result.append(tag)
+    if not result:
+        raise DomainError("至少提供一个标签")
+    return result
 
 
 def _now() -> datetime:
@@ -77,6 +102,7 @@ def _apply_event_to_projection(proj: RunProjection | None, event: EventStore) ->
             started_by=event.actor,
             metrics_json=[],
             artifacts_json=[],
+            tags_json=[],
             result_summary=None,
             abort_reason=None,
         )
@@ -117,6 +143,15 @@ def _apply_event_to_projection(proj: RunProjection | None, event: EventStore) ->
         proj.status = "aborted"
         proj.abort_reason = payload["reason"]
         proj.finished_at = event.occurred_at
+    elif event.event_type == "RunTagsAdded":
+        tags = list(proj.tags_json or [])
+        for tag in payload["tags"]:
+            if tag not in tags:
+                tags.append(tag)
+        proj.tags_json = tags
+    elif event.event_type == "RunTagsRemoved":
+        removed = set(payload["tags"])
+        proj.tags_json = [t for t in (proj.tags_json or []) if t not in removed]
     else:
         raise DomainError(f"未知事件类型: {event.event_type}")
 
@@ -292,6 +327,74 @@ def abort_run(
         version=expected_version + 1,
         event_type="RunAborted",
         payload={"reason": reason},
+        actor=actor,
+    )
+    proj = _apply_event_to_projection(proj, event)
+    db.commit()
+    db.refresh(proj)
+    return proj
+
+
+def _require_exists(proj: RunProjection | None) -> RunProjection:
+    if proj is None:
+        raise DomainError("Run 不存在", status_code=404)
+    return proj
+
+
+def add_tags(
+    db: Session,
+    *,
+    run_id: UUID,
+    actor: str,
+    tags: list[str],
+    expected_version: int,
+) -> RunProjection:
+    """Append RunTagsAdded events. Allowed in any run state (tags are
+    metadata), but still guarded by the aggregate's optimistic-lock version.
+    """
+    proj = _require_exists(_get_projection(db, run_id))
+    _check_expected_version(proj, expected_version)
+
+    new_tags = [t for t in normalize_tags(tags) if t not in (proj.tags_json or [])]
+    if not new_tags:
+        raise DomainError("标签均已存在，无需重复添加")
+
+    event = _append_event(
+        db,
+        aggregate_id=run_id,
+        version=expected_version + 1,
+        event_type="RunTagsAdded",
+        payload={"tags": new_tags},
+        actor=actor,
+    )
+    proj = _apply_event_to_projection(proj, event)
+    db.commit()
+    db.refresh(proj)
+    return proj
+
+
+def remove_tags(
+    db: Session,
+    *,
+    run_id: UUID,
+    actor: str,
+    tags: list[str],
+    expected_version: int,
+) -> RunProjection:
+    proj = _require_exists(_get_projection(db, run_id))
+    _check_expected_version(proj, expected_version)
+
+    requested = normalize_tags(tags)
+    present = [t for t in requested if t in (proj.tags_json or [])]
+    if not present:
+        raise DomainError("标签均不存在，无需移除")
+
+    event = _append_event(
+        db,
+        aggregate_id=run_id,
+        version=expected_version + 1,
+        event_type="RunTagsRemoved",
+        payload={"tags": present},
         actor=actor,
     )
     proj = _apply_event_to_projection(proj, event)

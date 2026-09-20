@@ -67,6 +67,21 @@ export async function abortRun(id, body) {
   return data
 }
 
+export async function addRunTags(id, body) {
+  const { data } = await api.post(`/runs/${id}/tags`, body)
+  return data
+}
+
+export async function removeRunTags(id, body) {
+  const { data } = await api.delete(`/runs/${id}/tags`, { data: body })
+  return data
+}
+
+export async function listTags() {
+  const { data } = await api.get('/tags')
+  return data
+}
+
 export async function getEvents(id) {
   const { data } = await api.get(`/runs/${id}/events`)
   return data

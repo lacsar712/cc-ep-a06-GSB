@@ -69,7 +69,14 @@ pytest -q
 
 ## 架构要点
 
-- **命令**：`StartRun` / `RecordMetric` / `AttachArtifact` / `CompleteRun` / `AbortRun`
-- **事件**：`RunStarted` / `MetricRecorded` / `ArtifactAttached` / `RunCompleted` / `RunAborted`
+- **命令**：`StartRun` / `RecordMetric` / `AttachArtifact` / `CompleteRun` / `AbortRun` / `AddTags` / `RemoveTags`
+- **事件**：`RunStarted` / `MetricRecorded` / `ArtifactAttached` / `RunCompleted` / `RunAborted` / `RunTagsAdded` / `RunTagsRemoved`
 - **event_store**：`(aggregate_id, version)` 唯一；冲突 → 409
-- **run_projections**：查询侧投影（状态、指标、产物等）
+- **run_projections**：查询侧投影（状态、指标、产物、`tags_json` 标签等）
+
+### 标签（Tags）
+
+- 落库方式：**走命令写入事件，可回看**。研究员在列表「🏷 标签」面板或 Run 详情页打/删标签，后端追加 `RunTagsAdded` / `RunTagsRemoved` 事件到 `event_store`（带 version、操作人），并投影到 `run_projections.tags_json`；事件时间线可回看每一次标签变更。
+- 一条 Run 可保存多个标签；标签在 Run 任意状态（含已完成）均可修改，仍受 `expected_version` 乐观锁保护。
+- 列表每行显示已有标签，点击标签或在标签面板/筛选框中按标签过滤；过滤走**服务端**：`GET /api/runs?tag=<label>`，Postgres 下为 JSONB 包含查询 `tags_json @> '["label"]'`。`GET /api/tags` 返回全量标签及计数供面板入口使用。
+- 权限：研究员（researcher）可写；审计员（auditor）只能查看，写/删标签返回 403。
