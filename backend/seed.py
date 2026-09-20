@@ -8,7 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import select, text
 
-from app.cqrs import attach_artifact, complete_run, record_metric, start_run
+from app.cqrs import attach_artifact, complete_run, record_metric, start_run, tag_run
 from app.database import Base, SessionLocal, engine
 from app.models import RunProjection
 
@@ -78,13 +78,14 @@ def seed() -> None:
             media_type="chemical/x-pdb",
             expected_version=run1.version,
         )
-        complete_run(
+        run1 = complete_run(
             db,
             run_id=run1.id,
             actor="researcher",
             result_summary="基线完成，最终 TM-score=0.81",
             expected_version=run1.version,
         )
+        tag_run(db, run_id=run1.id, actor="researcher", tag="baseline", expected_version=run1.version)
 
         # Completed run 2
         run2 = start_run(
@@ -116,13 +117,14 @@ def seed() -> None:
             media_type="text/csv",
             expected_version=run2.version,
         )
-        complete_run(
+        run2 = complete_run(
             db,
             run_id=run2.id,
             actor="researcher",
             result_summary="筛选完成，命中率 12%",
             expected_version=run2.version,
         )
+        tag_run(db, run_id=run2.id, actor="researcher", tag="screen", expected_version=run2.version)
 
         # Running run 3
         run3 = start_run(

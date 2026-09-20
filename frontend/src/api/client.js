@@ -77,4 +77,19 @@ export async function getLineage(id) {
   return data
 }
 
+export async function listTags() {
+  const { data } = await api.get('/tags')
+  return data
+}
+
+export async function addTag(id, body) {
+  const { data } = await api.post(`/runs/${id}/tags`, body)
+  return data
+}
+
+export async function removeTag(id, body) {
+  const { data } = await api.post(`/runs/${id}/untag`, body)
+  return data
+}
+
 export default api

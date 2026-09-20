@@ -39,6 +39,38 @@
       <p v-if="run.abort_reason"><strong>中止原因：</strong>{{ run.abort_reason }}</p>
     </div>
 
+    <div class="card" style="margin-bottom: 16px">
+      <h3 style="margin-top: 0">标签</h3>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px">
+        <n-tag
+          v-for="t in run.tags || []"
+          :key="t"
+          size="small"
+          :closable="auth.role === 'researcher'"
+          :disabled="tagBusy"
+          @close="doRemoveTag(t)"
+        >
+          {{ t }}
+        </n-tag>
+        <span v-if="!(run.tags || []).length" class="muted" style="font-size: 12px">暂无标签</span>
+      </div>
+      <div v-if="auth.role === 'researcher'" style="display: flex; gap: 8px; align-items: center; max-width: 420px">
+        <n-input
+          v-model:value="newTag"
+          size="small"
+          placeholder="新标签,如 night-run(1-64 字符)"
+          @keyup.enter="doAddTag"
+        />
+        <n-button size="small" type="primary" :loading="tagBusy" :disabled="!newTag.trim()" @click="doAddTag">
+          添加标签
+        </n-button>
+      </div>
+      <p class="muted" style="font-size: 12px; margin-bottom: 0; margin-top: 8px">
+        标签落库方式:通过命令写入事件(RunTagged / RunUntagged),可在「事件时间线」回看;
+        列表页可按标签做服务端过滤。{{ auth.role === 'researcher' ? '' : '审计员只读,不可修改标签。' }}
+      </p>
+    </div>
+
     <div class="grid-2" style="margin-bottom: 16px">
       <div class="card">
         <h3 style="margin-top: 0">指标（投影）</h3>
@@ -102,10 +134,12 @@ import { useRoute } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
   abortRun,
+  addTag,
   attachArtifact,
   completeRun,
   getRun,
   recordMetric,
+  removeTag,
 } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
@@ -116,6 +150,8 @@ const run = ref(null)
 const busy = ref(false)
 const completeSummary = ref('')
 const abortReason = ref('')
+const newTag = ref('')
+const tagBusy = ref(false)
 
 const metric = reactive({ name: 'loss', value: 0.5, step: 1 })
 const artifact = reactive({
@@ -221,6 +257,41 @@ function doAbort() {
       expected_version: run.value.version,
     }),
   )
+}
+
+async function doAddTag() {
+  const value = newTag.value.trim()
+  if (!value) return
+  tagBusy.value = true
+  try {
+    run.value = await addTag(run.value.id, {
+      tag: value,
+      expected_version: run.value.version,
+    })
+    newTag.value = ''
+    message.success(`已添加标签「${value}」`)
+  } catch (e) {
+    message.error(e.message || '打标签失败')
+    await load()
+  } finally {
+    tagBusy.value = false
+  }
+}
+
+async function doRemoveTag(t) {
+  tagBusy.value = true
+  try {
+    run.value = await removeTag(run.value.id, {
+      tag: t,
+      expected_version: run.value.version,
+    })
+    message.success(`已移除标签「${t}」`)
+  } catch (e) {
+    message.error(e.message || '移除标签失败')
+    await load()
+  } finally {
+    tagBusy.value = false
+  }
 }
 
 onMounted(async () => {

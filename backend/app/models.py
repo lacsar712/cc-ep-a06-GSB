@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,3 +43,21 @@ class RunProjection(Base):
     artifacts_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     abort_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class RunTagProjection(Base):
+    """查询侧标签投影:由 RunTagged / RunUntagged 事件回放维护,(run_id, tag) 唯一。"""
+
+    __tablename__ = "run_tag_projections"
+    __table_args__ = (
+        Index("ix_run_tag_projections_tag", "tag"),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("run_projections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tagged_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    tagged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

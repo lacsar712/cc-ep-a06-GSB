@@ -11,12 +11,17 @@ from app.cqrs import (
     abort_run,
     attach_artifact,
     complete_run,
+    list_all_tags,
     list_events,
+    list_tags,
+    list_tags_for_runs,
     record_metric,
     start_run,
+    tag_run,
+    untag_run,
 )
 from app.database import get_db
-from app.models import RunProjection
+from app.models import RunProjection, RunTagProjection
 from app.schemas import (
     AbortRunCommand,
     AttachArtifactCommand,
@@ -27,6 +32,8 @@ from app.schemas import (
     RecordMetricCommand,
     RunOut,
     StartRunCommand,
+    TagOut,
+    TagRunCommand,
     TokenResponse,
 )
 
@@ -35,6 +42,12 @@ router = APIRouter(prefix="/api")
 
 def _handle_domain(exc: DomainError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+def _to_run_out(proj: RunProjection, tags: list[str]) -> RunOut:
+    out = RunOut.model_validate(proj)
+    out.tags = tags
+    return out
 
 
 @router.get("/health")
@@ -59,6 +72,7 @@ def login(body: LoginRequest):
 def get_runs(
     project: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    tag: str | None = Query(default=None),
     db: Session = Depends(get_db),
     _user: dict = Depends(get_current_user),
 ):
@@ -67,7 +81,26 @@ def get_runs(
         stmt = stmt.where(RunProjection.project == project)
     if status:
         stmt = stmt.where(RunProjection.status == status)
-    return list(db.scalars(stmt).all())
+    if tag and tag.strip():
+        # 服务端按标签过滤:走 run_tag_projections 投影子查询
+        stmt = stmt.where(
+            RunProjection.id.in_(
+                select(RunTagProjection.run_id).where(
+                    RunTagProjection.tag == tag.strip()
+                )
+            )
+        )
+    runs = list(db.scalars(stmt).all())
+    tags_by_run = list_tags_for_runs(db, [run.id for run in runs])
+    return [_to_run_out(run, tags_by_run.get(run.id, [])) for run in runs]
+
+
+@router.get("/tags", response_model=list[TagOut])
+def get_tags(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    return [TagOut(tag=tag, run_count=count) for tag, count in list_all_tags(db)]
 
 
 @router.post("/runs", response_model=RunOut, status_code=201)
@@ -77,7 +110,7 @@ def create_run(
     user: dict = Depends(require_researcher),
 ):
     try:
-        return start_run(
+        proj = start_run(
             db,
             actor=user["username"],
             project=body.project,
@@ -87,6 +120,7 @@ def create_run(
             description=body.description,
             expected_version=body.expected_version,
         )
+        return _to_run_out(proj, list_tags(db, proj.id))
     except DomainError as exc:
         _handle_domain(exc)
 
@@ -100,7 +134,7 @@ def get_run(
     proj = db.get(RunProjection, run_id)
     if not proj:
         raise HTTPException(status_code=404, detail="Run 不存在")
-    return proj
+    return _to_run_out(proj, list_tags(db, run_id))
 
 
 @router.post("/runs/{run_id}/metrics", response_model=RunOut)
@@ -111,7 +145,7 @@ def post_metric(
     user: dict = Depends(require_researcher),
 ):
     try:
-        return record_metric(
+        proj = record_metric(
             db,
             run_id=run_id,
             actor=user["username"],
@@ -120,6 +154,7 @@ def post_metric(
             step=body.step,
             expected_version=body.expected_version,
         )
+        return _to_run_out(proj, list_tags(db, run_id))
     except DomainError as exc:
         _handle_domain(exc)
 
@@ -132,7 +167,7 @@ def post_artifact(
     user: dict = Depends(require_researcher),
 ):
     try:
-        return attach_artifact(
+        proj = attach_artifact(
             db,
             run_id=run_id,
             actor=user["username"],
@@ -142,6 +177,7 @@ def post_artifact(
             media_type=body.media_type,
             expected_version=body.expected_version,
         )
+        return _to_run_out(proj, list_tags(db, run_id))
     except DomainError as exc:
         _handle_domain(exc)
 
@@ -154,13 +190,14 @@ def post_complete(
     user: dict = Depends(require_researcher),
 ):
     try:
-        return complete_run(
+        proj = complete_run(
             db,
             run_id=run_id,
             actor=user["username"],
             result_summary=body.result_summary,
             expected_version=body.expected_version,
         )
+        return _to_run_out(proj, list_tags(db, run_id))
     except DomainError as exc:
         _handle_domain(exc)
 
@@ -173,13 +210,54 @@ def post_abort(
     user: dict = Depends(require_researcher),
 ):
     try:
-        return abort_run(
+        proj = abort_run(
             db,
             run_id=run_id,
             actor=user["username"],
             reason=body.reason,
             expected_version=body.expected_version,
         )
+        return _to_run_out(proj, list_tags(db, run_id))
+    except DomainError as exc:
+        _handle_domain(exc)
+
+
+@router.post("/runs/{run_id}/tags", response_model=RunOut)
+def post_tag(
+    run_id: UUID,
+    body: TagRunCommand,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_researcher),
+):
+    try:
+        proj = tag_run(
+            db,
+            run_id=run_id,
+            actor=user["username"],
+            tag=body.tag,
+            expected_version=body.expected_version,
+        )
+        return _to_run_out(proj, list_tags(db, run_id))
+    except DomainError as exc:
+        _handle_domain(exc)
+
+
+@router.post("/runs/{run_id}/untag", response_model=RunOut)
+def post_untag(
+    run_id: UUID,
+    body: TagRunCommand,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_researcher),
+):
+    try:
+        proj = untag_run(
+            db,
+            run_id=run_id,
+            actor=user["username"],
+            tag=body.tag,
+            expected_version=body.expected_version,
+        )
+        return _to_run_out(proj, list_tags(db, run_id))
     except DomainError as exc:
         _handle_domain(exc)
 

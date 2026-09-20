@@ -64,12 +64,19 @@ pytest -q
 6. 打开「血缘」确认 code_commit、dataset 指纹、artifacts、metrics
 7. 健康检查：`GET http://localhost:8173/api/health`
 8. 用 `auditor` 登录：可看列表/事件/血缘，命令按钮不可用
+9. 标签：在列表页打开「标签面板」（或详情页标签卡），给进行中的 Run 打上 `night-run`；
+   再在列表的标签筛选项选 `night-run`（服务端过滤），列表只剩这一条；
+   「事件时间线」可回看 `RunTagged` 事件。审计员可查看标签与筛选，打标/去标返回 403。
 
 终态或 `expected_version` 不匹配时，API 返回 **409**。
 
 ## 架构要点
 
-- **命令**：`StartRun` / `RecordMetric` / `AttachArtifact` / `CompleteRun` / `AbortRun`
-- **事件**：`RunStarted` / `MetricRecorded` / `ArtifactAttached` / `RunCompleted` / `RunAborted`
+- **命令**：`StartRun` / `RecordMetric` / `AttachArtifact` / `CompleteRun` / `AbortRun` / `TagRun` / `UntagRun`
+- **事件**：`RunStarted` / `MetricRecorded` / `ArtifactAttached` / `RunCompleted` / `RunAborted` / `RunTagged` / `RunUntagged`
 - **event_store**：`(aggregate_id, version)` 唯一；冲突 → 409
 - **run_projections**：查询侧投影（状态、指标、产物等）
+- **run_tag_projections**：标签查询侧投影，`(run_id, tag)` 唯一；`GET /api/runs?tag=...` 走服务端子查询过滤
+- **标签落库方式**：走命令写入事件（`TagRun`/`UntagRun` → `RunTagged`/`RunUntagged`），事件时间线可回看；
+  标签属元数据，终态 Run 也可打标/去标；重复打标/去标为幂等空操作（不追加事件）。
+  仅研究员可打标/去标（`POST /api/runs/{id}/tags`、`POST /api/runs/{id}/untag`），审计员只读。
